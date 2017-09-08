@@ -1,2 +1,2 @@
 #!/bin/bash
-java -jar target/lab0.jar $1 $2 $3
+src/bin/src $1 $2 $3

@@ -10,6 +10,7 @@ import sys
 import time
 from socket import SOCK_STREAM, socket, AF_INET
 from threading import Thread
+import message_pb2 as message
 
 address = 'localhost'
 threads = {}  # ends up keeping track of who is alive
@@ -123,7 +124,7 @@ def exit(exit=False):
 
 
 def timeout():
-    time.sleep(60)
+    time.sleep(15)
     print 'Timeout!'
     exit(True)
 
@@ -132,6 +133,10 @@ def main(debug=False):
     global threads, wait_ack
     timeout_thread = Thread(target=timeout, args=())
     timeout_thread.start()
+    chatMessage = message.TextMessage()
+    chatMessage.message="hello"
+    message.TextMessage.ParseFromString(chatMessage, chatMessage.SerializeToString())
+    print chatMessage.__str__()
 
     while True:
         line = ''

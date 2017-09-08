@@ -1,3 +1,5 @@
 .idea/
 *.iml
 docs/build/
+.DS_STORE
+**.pyc

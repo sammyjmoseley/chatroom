@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+message ChatMessage {
+	int32 from_id = 1;
+	int32 to_id = 2;
+	int32 lc_id = 3;
+	oneof test_oneof {
+     	HeartBeatMessage heart_beat = 4;
+    	TextMessage text_message = 5;
+  	}
+}
+
+message TextMessage {
+	string message = 1;
+}
+
+message HeartBeatMessage {
+
+}
