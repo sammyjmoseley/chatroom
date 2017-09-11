@@ -64,6 +64,7 @@ class ClientHandler(Thread):
     def send(self, s):
         if self.valid:
             self.sock.send(str(s) + '\n')
+            print "sent"
 
     def close(self):
         try:
@@ -124,7 +125,7 @@ def exit(exit=False):
 
 
 def timeout():
-    time.sleep(15)
+    time.sleep(60)
     print 'Timeout!'
     exit(True)
 
@@ -167,8 +168,8 @@ def main(debug=False):
             if debug:
                 process = subprocess.Popen(['./process', str(pid), sp2[2], sp2[3]], preexec_fn=os.setsid)
             else:
-                process = subprocess.Popen(['./process', str(pid), sp2[2], sp2[3]], stdout=open('/dev/null', 'w'),
-                                           stderr=open('/dev/null', 'w'), preexec_fn=os.setsid)
+                process = subprocess.Popen(['./process', str(pid), sp2[2], sp2[3]], stdout=open('/bin/echo', 'w'),
+                                           stderr=open('/bin/echo', 'w'), preexec_fn=os.setsid)
 
             # sleep for a while to allow the process be ready
             time.sleep(3)
@@ -189,7 +190,7 @@ def main(debug=False):
 
 
 if __name__ == '__main__':
-    debug = False
+    debug = True
     if len(sys.argv) > 1 and sys.argv[1] == 'debug':
         debug = True
 
