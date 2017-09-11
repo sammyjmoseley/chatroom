@@ -9,11 +9,33 @@
 #include <mutex>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <message.pb.h>
+
 
 
 typedef std::unordered_set<int> int_set;
 
+const bool debug = false;
 
+struct Packet {
+    int id;
+    int client_socket;
+};
+
+struct MessageId {
+    int from_id;
+    int to_id;
+    int lc_id;
+
+    bool operator ==(const MessageId a) const {
+        return from_id==a.from_id && to_id == a.to_id && lc_id == a.lc_id;
+    }
+};
+
+size_t message_id_hash( const MessageId & name )
+{
+    return std::hash<int>()(name.from_id) ^ std::hash<int>()(name.to_id) ^ std::hash<int>()(name.lc_id);
+}
 
 template <class T>
 class ConcurrentQueue {
@@ -48,78 +70,24 @@ public:
     }
 };
 
+
+
 struct NodeThread {
     int portno;
     std::atomic<bool> is_alive;
-    ConcurrentQueue<char*>* message_queue;
+    ConcurrentQueue<char*>* message_in_queue;
+    ConcurrentQueue<Packet>* message_out_queue;
+    std::unordered_set<MessageId, decltype(&message_id_hash)>* message_set;
     void (*conn_accepter)(int newsockfd, char* buffer, NodeThread* node_thread);
 };
-
-class NetworkInfo {
-private:
-    std::unordered_map<int, NodeThread*> map;
-    std::mutex mtx;
-public:
-    void add(int id, NodeThread* thread) {
-        try {
-            std::unique_lock<std::mutex> lck (mtx);
-            if (!contains(id)) {
-//                map.insert({{id, thread}});
-                std::cout << "Need to implement this";
-            }
-        }
-        catch (std::logic_error&) {
-            std::cout << "[exception caught]\n";
-        }
-    }
-
-    bool contains(int id) {
-        try {
-            std::unique_lock<std::mutex> lck (mtx);
-            return map.find(id) != map.end();
-        }
-        catch (std::logic_error&) {
-            std::cout << "[exception caught]\n";
-            return false;
-        }
-    }
-
-    void remove(int id) {
-        try {
-            std::unique_lock<std::mutex> lck (mtx);
-            if (!contains(id)) {
-                map.erase(id);
-            }
-        }
-        catch (std::logic_error&) {
-            std::cout << "[exception caught]\n";
-        }
-    }
-};
-
-struct ProcessInfo {
-    int process_id;
-    NetworkInfo network_state;
-    ConcurrentQueue<char*> message_queue;
-};
-
-
-ProcessInfo process_info;
 
 void error(const char *msg) {
     perror(msg);
     exit(1);
 }
 
-void update_node(int_set* set, int id, bool is_alive) {
-    int_set::const_iterator it = set->find(id);
-    bool contains = !(it == set->end());
-    if (is_alive && !contains) {
-        set->insert(id);
-    } else if (!is_alive && contains) {
-        set->erase(id);
-    }
-}
+const int max_clients = 2;
+int client_sockets[max_clients];
 
 
 void create_socket(NodeThread * node_thread) {
@@ -149,8 +117,7 @@ void create_socket(NodeThread * node_thread) {
     clilen = sizeof(cli_addr);
 
     fd_set readfds;
-    int max_clients = 30;
-    int client_sockets[max_clients];
+
 
     for (int i = 0; i < max_clients; i++) {
         client_sockets[i] = 0;
@@ -195,10 +162,10 @@ void create_socket(NodeThread * node_thread) {
                     (address.sin_port));
 
             //send new connection greeting message
-            if( send(new_socket, message, strlen(message), 0) != strlen(message) )
-            {
-                perror("send");
-            }
+//            if( send(new_socket, message, strlen(message), 0) != strlen(message) )
+//            {
+//                perror("send");
+//            }
 
             puts("Welcome message sent successfully");
 
@@ -248,10 +215,38 @@ void create_socket(NodeThread * node_thread) {
                     //set the string terminating NULL byte on the end
                     //of the data read
                     buffer[valread] = '\0';
-                    send(sd , buffer , strlen(buffer) , 0 );
+                    node_thread->message_in_queue->push(buffer);
                 }
             }
         }
+    }
+}
+
+void message_reader(NodeThread * nodeThread) {
+    while (nodeThread->is_alive.load()) {
+        char* txt = nodeThread->message_in_queue->pop();
+        ChatMessage chatMessage;
+        if (!chatMessage.ParseFromString(txt)) {
+            std::cout << "error parsing string" << std::endl;
+        }
+        MessageId messageId;
+        messageId.lc_id = chatMessage.lc_id();
+        messageId.from_id = chatMessage.from_id();
+        messageId.to_id = chatMessage.to_id();
+        if (nodeThread->message_set->find(messageId) == nodeThread->message_set->end()) {
+            std::cout << txt << std::endl;
+            nodeThread->message_set->insert(messageId);
+        } else {
+            std::cout << "already recieved this message" << std::endl;
+        }
+
+
+    }
+}
+
+void message_writer(NodeThread nodeThread) {
+    while(nodeThread.is_alive.load()) {
+
     }
 }
 
@@ -265,23 +260,25 @@ int main(int argc, char * argv[]) {
     int n = atoi(argv[2]);
     int port = atoi(argv[3]);
 
-    ConcurrentQueue<char*> message_queue;
+    ConcurrentQueue<char*> message_in_queue;
+    ConcurrentQueue<Packet> message_out_queue;
+    std::unordered_set<MessageId, decltype(&message_id_hash)> message_set(100, message_id_hash);
 
     NodeThread nodeThread;
 //    nodeThread.address = "localhost";
-    nodeThread.message_queue = &message_queue;
+    nodeThread.message_in_queue = &message_in_queue;
+    nodeThread.message_out_queue = &message_out_queue;
+    nodeThread.message_set = &message_set;
     nodeThread.is_alive.store(true);
     nodeThread.portno = port;
 
-    process_info.process_id = id;
 
-    ChatMessage* chatMessage;
     std::thread connection_thread(create_socket, &nodeThread);
 
-    while (nodeThread.is_alive.load()) {
-        char* txt = nodeThread.message_queue->pop();
-        printf("%s\n",txt);
-    }
+    std::thread reading_thread(message_reader, &nodeThread);
+
+    reading_thread.join();
+
     std::cout << std::endl;
 
     exit(0);
