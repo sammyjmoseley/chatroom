@@ -11,10 +11,6 @@
 #include <arpa/inet.h>
 #include <message.pb.h>
 
-
-
-typedef std::unordered_set<int> int_set;
-
 const bool debug = false;
 
 struct Packet {
@@ -32,8 +28,7 @@ struct MessageId {
     }
 };
 
-size_t message_id_hash( const MessageId & name )
-{
+size_t message_id_hash( const MessageId & name ) {
     return std::hash<int>()(name.from_id) ^ std::hash<int>()(name.to_id) ^ std::hash<int>()(name.lc_id);
 }
 
@@ -70,14 +65,79 @@ public:
     }
 };
 
+template <class L, class R>
+class BiMap {
+    std::map<L, R> left;
+    std::map<R, L> right;
+
+    void removeLeftHelper(L l) {
+        typename std::map<L, R>::const_iterator itL = left.find(l);
+        if (itL == left.end()) {
+            return;
+        }
+
+        left.erase(itL);
+    }
+
+    void removeRightHelper(R r) {
+        typename std::map<R, L>::const_iterator itR = right.find(r);
+        if (itR == left.end()) {
+            return;
+        }
+        right.erase(itR);
+    }
+
+public:
+    void add(L l, R r) {
+        left.insert(std::pair<L, R>(l, r));
+        right.insert(std::pair<L, R>(r, l));
+    }
+
+    void removeLeft(L l) {
+        typename std::map<L, R>::iterator itL = left.find(l);
+        if (itL == left.end()) {
+            return;
+        }
+        removeRightHelper(itL->second);
+        left.erase(itL);
+    }
+
+    void removeRight(R r) {
+        typename std::map<R, L>::iterator itR = right.find(r);
+        if (itR == right.end()) {
+            return;
+        }
+        removeLeftHelper(itR->second);
+        right.erase(itR);
+    }
+
+    typename std::map<L, R>::iterator beginLeft() {
+        return left.begin();
+    };
+
+    typename std::map<R, L>::iterator beginRight() {
+        return right.begin();
+    };
+
+    typename std::map<L, R>::const_iterator endLeft() {
+        return left.end();
+    };
+
+    typename std::map<R, L>::const_iterator endRight() {
+        return right.end();
+    };
+};
 
 
 struct NodeThread {
-    int portno;
+    int port_num;
     std::atomic<bool> is_alive;
     ConcurrentQueue<char*>* message_in_queue;
     ConcurrentQueue<Packet>* message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)>* message_set;
+    int len_clients_socks;
+    int* client_sockets;
+
     void (*conn_accepter)(int newsockfd, char* buffer, NodeThread* node_thread);
 };
 
@@ -85,9 +145,6 @@ void error(const char *msg) {
     perror(msg);
     exit(1);
 }
-
-const int max_clients = 2;
-int client_sockets[max_clients];
 
 
 void create_socket(NodeThread * node_thread) {
@@ -101,7 +158,7 @@ void create_socket(NodeThread * node_thread) {
     bzero((char *) &serv_addr, sizeof(serv_addr));
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_addr.s_addr = INADDR_ANY;
-    serv_addr.sin_port = htons(node_thread->portno);
+    serv_addr.sin_port = htons(node_thread->port_num);
 
     if( setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *)&(opt),
                    sizeof(opt)) < 0 ) {
@@ -119,8 +176,8 @@ void create_socket(NodeThread * node_thread) {
     fd_set readfds;
 
 
-    for (int i = 0; i < max_clients; i++) {
-        client_sockets[i] = 0;
+    for (int i = 0; i < node_thread->len_clients_socks; i++) {
+        node_thread->client_sockets[i] = 0;
     }
 
     while (node_thread -> is_alive) {
@@ -128,8 +185,8 @@ void create_socket(NodeThread * node_thread) {
 
         FD_SET(sockfd, &readfds);
         int max_fd = sockfd;
-        for (int i = 0; i < max_clients; i++) {
-            int sd = client_sockets[i];
+        for (int i = 0; i < node_thread->len_clients_socks; i++) {
+            int sd = node_thread->client_sockets[i];
             if (sd > 0) {
                 FD_SET(sd, &readfds);
             }
@@ -170,12 +227,12 @@ void create_socket(NodeThread * node_thread) {
             puts("Welcome message sent successfully");
 
             //add new socket to array of sockets
-            for (int i = 0; i < max_clients; i++)
+            for (int i = 0; i < node_thread->len_clients_socks; i++)
             {
                 //if position is empty
-                if( client_sockets[i] == 0 )
+                if( node_thread->client_sockets[i] == 0 )
                 {
-                    client_sockets[i] = new_socket;
+                    node_thread->client_sockets[i] = new_socket;
                     printf("Adding to list of sockets as %d\n" , i);
 
                     break;
@@ -184,9 +241,9 @@ void create_socket(NodeThread * node_thread) {
         }
 
         //else its some IO operation on some other socket
-        for (int i = 0; i < max_clients; i++)
+        for (int i = 0; i < node_thread->len_clients_socks; i++)
         {
-            int sd = client_sockets[i];
+            int sd = node_thread->client_sockets[i];
 
             if (FD_ISSET( sd , &readfds))
             {
@@ -206,7 +263,7 @@ void create_socket(NodeThread * node_thread) {
 
                     //Close the socket and mark as 0 in list for reuse
                     close( sd );
-                    client_sockets[i] = 0;
+                    node_thread->client_sockets[i] = 0;
                 }
 
                     //Echo back the message that came in
@@ -225,14 +282,14 @@ void create_socket(NodeThread * node_thread) {
 void message_reader(NodeThread * nodeThread) {
     while (nodeThread->is_alive.load()) {
         char* txt = nodeThread->message_in_queue->pop();
-        ChatMessage chatMessage;
-        if (!chatMessage.ParseFromString(txt)) {
-            std::cout << "error parsing string" << std::endl;
-        }
+//        ChatMessage chatMessage;
+//        if (!chatMessage.ParseFromString(txt)) {
+//            std::cout << "error parsing string" << std::endl;
+//        }
         MessageId messageId;
-        messageId.lc_id = chatMessage.lc_id();
-        messageId.from_id = chatMessage.from_id();
-        messageId.to_id = chatMessage.to_id();
+//        messageId.lc_id = chatMessage.lc_id();
+//        messageId.from_id = chatMessage.from_id();
+//        messageId.to_id = chatMessage.to_id();
         if (nodeThread->message_set->find(messageId) == nodeThread->message_set->end()) {
             std::cout << txt << std::endl;
             nodeThread->message_set->insert(messageId);
@@ -260,9 +317,13 @@ int main(int argc, char * argv[]) {
     int n = atoi(argv[2]);
     int port = atoi(argv[3]);
 
+
+    const int max_num_sockets = 4;
+
     ConcurrentQueue<char*> message_in_queue;
     ConcurrentQueue<Packet> message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)> message_set(100, message_id_hash);
+    int client_socket[max_num_sockets];
 
     NodeThread nodeThread;
 //    nodeThread.address = "localhost";
@@ -270,7 +331,9 @@ int main(int argc, char * argv[]) {
     nodeThread.message_out_queue = &message_out_queue;
     nodeThread.message_set = &message_set;
     nodeThread.is_alive.store(true);
-    nodeThread.portno = port;
+    nodeThread.client_sockets = client_socket;
+    nodeThread.len_clients_socks = max_num_sockets;
+    nodeThread.port_num = port;
 
 
     std::thread connection_thread(create_socket, &nodeThread);
