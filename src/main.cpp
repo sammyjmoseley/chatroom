@@ -131,12 +131,12 @@ public:
 
 struct NodeThread {
     int port_num;
+    int my_id;
     std::atomic<bool> is_alive;
     ConcurrentQueue<char*>* message_in_queue;
     ConcurrentQueue<Packet>* message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)>* message_set;
-    int len_clients_socks;
-    int* client_sockets;
+    BiMap<int, int> socket_map; //socketfd <--> process_id
 
     void (*conn_accepter)(int newsockfd, char* buffer, NodeThread* node_thread);
 };
@@ -175,18 +175,15 @@ void create_socket(NodeThread * node_thread) {
 
     fd_set readfds;
 
-
-    for (int i = 0; i < node_thread->len_clients_socks; i++) {
-        node_thread->client_sockets[i] = 0;
-    }
-
     while (node_thread -> is_alive) {
         FD_ZERO(&readfds);
 
         FD_SET(sockfd, &readfds);
         int max_fd = sockfd;
-        for (int i = 0; i < node_thread->len_clients_socks; i++) {
-            int sd = node_thread->client_sockets[i];
+        for (std::map<int, int>::iterator it = node_thread->socket_map.beginLeft();
+             it != node_thread->socket_map.endLeft();
+             ++it) {
+            int sd = it->first;
             if (sd > 0) {
                 FD_SET(sd, &readfds);
             }
@@ -226,35 +223,23 @@ void create_socket(NodeThread * node_thread) {
 
             puts("Welcome message sent successfully");
 
-            //add new socket to array of sockets
-            for (int i = 0; i < node_thread->len_clients_socks; i++)
-            {
-                //if position is empty
-                if( node_thread->client_sockets[i] == 0 )
-                {
-                    node_thread->client_sockets[i] = new_socket;
-                    printf("Adding to list of sockets as %d\n" , i);
-
-                    break;
-                }
-            }
+            node_thread->socket_map.add(new_socket, -1);
         }
 
         //else its some IO operation on some other socket
-        for (int i = 0; i < node_thread->len_clients_socks; i++)
-        {
-            int sd = node_thread->client_sockets[i];
+        for (std::map<int, int>::iterator it = node_thread->socket_map.beginLeft();
+             it != node_thread->socket_map.endLeft();
+             ++it) {
+            int sd = it->first;
 
-            if (FD_ISSET( sd , &readfds))
-            {
+            if (FD_ISSET( sd , &readfds)) {
                 //Check if it was for closing , and also read the
                 //incoming message
                 int valread;
                 char buffer[1024];
                 sockaddr_in address;
                 int addrlen = sizeof(addrlen);
-                if ((valread = read( sd , buffer, 1024)) == 0)
-                {
+                if ((valread = read( sd , buffer, 1024)) == 0) {
                     //Somebody disconnected , get his details and print
                     getpeername(sd , (struct sockaddr*)&address , \
                         (socklen_t*)&addrlen);
@@ -263,7 +248,7 @@ void create_socket(NodeThread * node_thread) {
 
                     //Close the socket and mark as 0 in list for reuse
                     close( sd );
-                    node_thread->client_sockets[i] = 0;
+                    node_thread->socket_map.removeLeft(sd);
                 }
 
                     //Echo back the message that came in
@@ -324,15 +309,16 @@ int main(int argc, char * argv[]) {
     ConcurrentQueue<Packet> message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)> message_set(100, message_id_hash);
     int client_socket[max_num_sockets];
+    BiMap<int, int> socket_map;
 
     NodeThread nodeThread;
 //    nodeThread.address = "localhost";
+    nodeThread.my_id = id;
     nodeThread.message_in_queue = &message_in_queue;
     nodeThread.message_out_queue = &message_out_queue;
     nodeThread.message_set = &message_set;
     nodeThread.is_alive.store(true);
-    nodeThread.client_sockets = client_socket;
-    nodeThread.len_clients_socks = max_num_sockets;
+    nodeThread.socket_map = socket_map;
     nodeThread.port_num = port;
 
 
