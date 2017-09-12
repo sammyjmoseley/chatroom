@@ -3,3 +3,5 @@
 docs/build/
 .DS_STORE
 **.pyc
+.vagrant/**
+Vagrantfile

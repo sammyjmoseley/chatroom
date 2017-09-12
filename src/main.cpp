@@ -1,5 +1,4 @@
 #include <iostream>
-#include <message.pb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -9,13 +8,25 @@
 #include <mutex>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <message.pb.h>
-
-const bool debug = false;
+#include <unordered_map>
+#include <map>
+#include <unordered_set>
+#include <stdio.h>
+#include <netdb.h>
+#include <set>
+#include <string>
+const bool debug = true;
+int NULL_INT = 0;
 
 struct Packet {
     int id;
     int client_socket;
+};
+
+struct Message {
+    int sockfd;
+    char* message;
+    int message_len;
 };
 
 struct MessageId {
@@ -55,7 +66,7 @@ public:
         try {
             std::unique_lock<std::mutex> lck(mtx);
             this->cv.wait(lck, [this]{return !queue.empty();});
-            char* ret = queue.front();
+            T ret = queue.front();
             queue.pop();
             return ret;
         }
@@ -63,6 +74,43 @@ public:
             std::cout << "[exception caught]\n";
         }
     }
+};
+
+template <class K, class V>
+class ConcurrentMap {
+
+public:
+    std::map<K, V> map;
+    bool contains(K key) {
+        return map.find(key) != map.end();
+    }
+
+    typename std::map<K, V>::iterator get(K key) {
+        typename std::map<K,V>::iterator it = map.find(key);
+        return it;
+    };
+
+    void put(K key, V val) {
+        map.insert({{key, val}});
+    }
+
+    void remove(K key) {
+        map.erase(key);
+    }
+
+    typename std::map<K, V> get_map() {
+        return map;
+    }
+
+    typename std::map<K, V>::iterator it() {
+
+        return map.begin();
+    }
+
+    typename std::map<K, V>::iterator end() {
+        return map.end();
+    }
+
 };
 
 template <class L, class R>
@@ -89,6 +137,19 @@ class BiMap {
 
 public:
     void add(L l, R r) {
+        std::map<int, int>::iterator lit = left.find(l);
+        if (!(lit == left.end())) {
+            removeRightHelper(lit->second);
+            removeLeftHelper(lit->first);
+        }
+
+        std::map<int, int>::iterator rit = right.find(r);
+        if (!(rit == right.end())) {
+            removeLeftHelper(rit->second);
+            removeRightHelper(rit->first);
+        }
+
+
         left.insert(std::pair<L, R>(l, r));
         right.insert(std::pair<L, R>(r, l));
     }
@@ -119,13 +180,44 @@ public:
         return right.begin();
     };
 
-    typename std::map<L, R>::const_iterator endLeft() {
+    typename std::map<L, R>::iterator endLeft() {
         return left.end();
     };
 
-    typename std::map<R, L>::const_iterator endRight() {
+    typename std::map<R, L>::iterator endRight() {
         return right.end();
     };
+};
+
+template<class T>
+class ConcurrentLinkedList {
+    T val;
+    ConcurrentLinkedList* next;
+    ConcurrentLinkedList* prev;
+
+public:
+    ConcurrentLinkedList* add(T val) {
+        ConcurrentLinkedList new_node;
+        new_node.val = val;
+        new_node.next = this->next;
+        new_node.prev = this;
+        this->next->prev = &new_node;
+        return &new_node;
+    }
+
+    void remove() {
+        if (this->prev != NULL) {
+            this->prev->next = this->next;
+        }
+
+        if (this->next != NULL) {
+            this->next->prev = this->prev;
+        }
+    }
+
+    T get_val() {
+        return val;
+    }
 };
 
 
@@ -133,10 +225,11 @@ struct NodeThread {
     int port_num;
     int my_id;
     std::atomic<bool> is_alive;
-    ConcurrentQueue<char*>* message_in_queue;
+    ConcurrentQueue<Message*>* message_in_queue;
     ConcurrentQueue<Packet>* message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)>* message_set;
-    BiMap<int, int> socket_map; //socketfd <--> process_id
+    ConcurrentMap<int, const int*>* process_map; // process_id -> socket_fd
+    ConcurrentMap<int, const int*>* socket_map; //socket_fd -> process_id
 
     void (*conn_accepter)(int newsockfd, char* buffer, NodeThread* node_thread);
 };
@@ -180,8 +273,8 @@ void create_socket(NodeThread * node_thread) {
 
         FD_SET(sockfd, &readfds);
         int max_fd = sockfd;
-        for (std::map<int, int>::iterator it = node_thread->socket_map.beginLeft();
-             it != node_thread->socket_map.endLeft();
+        for (std::map<int, const int*>::iterator it = node_thread->socket_map->it();
+             it != node_thread->socket_map->end();
              ++it) {
             int sd = it->first;
             if (sd > 0) {
@@ -213,7 +306,7 @@ void create_socket(NodeThread * node_thread) {
 
             //inform user of socket number - used in send and receive commands
             printf("New connection , socket fd is %d , ip is : %s , port : %d \n" , new_socket , inet_ntoa(address.sin_addr) , ntohs
-                    (address.sin_port));
+            (address.sin_port));
 
             //send new connection greeting message
 //            if( send(new_socket, message, strlen(message), 0) != strlen(message) )
@@ -222,16 +315,18 @@ void create_socket(NodeThread * node_thread) {
 //            }
 
             puts("Welcome message sent successfully");
+            node_thread->socket_map->put(new_socket, &NULL_INT);
 
-            node_thread->socket_map.add(new_socket, -1);
+
         }
 
         //else its some IO operation on some other socket
-        for (std::map<int, int>::iterator it = node_thread->socket_map.beginLeft();
-             it != node_thread->socket_map.endLeft();
-             ++it) {
+        std::set<int> removeBucket;
+        for (auto it = node_thread->socket_map->it();
+             it != node_thread->socket_map->end();
+                ) {
             int sd = it->first;
-
+            bool removed = false;
             if (FD_ISSET( sd , &readfds)) {
                 //Check if it was for closing , and also read the
                 //incoming message
@@ -239,6 +334,9 @@ void create_socket(NodeThread * node_thread) {
                 char buffer[1024];
                 sockaddr_in address;
                 int addrlen = sizeof(addrlen);
+
+
+
                 if ((valread = read( sd , buffer, 1024)) == 0) {
                     //Somebody disconnected , get his details and print
                     getpeername(sd , (struct sockaddr*)&address , \
@@ -248,41 +346,119 @@ void create_socket(NodeThread * node_thread) {
 
                     //Close the socket and mark as 0 in list for reuse
                     close( sd );
-                    node_thread->socket_map.removeLeft(sd);
+                    if (node_thread->process_map->contains(*it->second)) {
+                        node_thread->process_map->remove(*it->second);
+                    }
+                    removeBucket.insert(it->first);
                 }
 
                     //Echo back the message that came in
-                else
-                {
+                else {
                     //set the string terminating NULL byte on the end
                     //of the data read
                     buffer[valread] = '\0';
-                    node_thread->message_in_queue->push(buffer);
+                    Message message;
+                    message.message = buffer;
+                    message.message_len = valread;
+                    message.sockfd = sd;
+                    node_thread->message_in_queue->push(&message);
                 }
             }
+
+            ++it;
+        }
+
+        for (auto it = removeBucket.begin(); it != removeBucket.end(); it++) {
+            node_thread->socket_map->remove(*it);
         }
     }
 }
 
+struct heartbeat {
+    int sockfd;
+    int process_id;
+};
+
+struct Command {
+    std::string* broadcast;
+    hostent* connect;
+    heartbeat* beat;
+};
+
+const std::string BROADCAST("broadcast ");
+const std::string HEARTBEAT("heartbeat ");
+const std::string DEADSIGNL("deadsignl ");
+const std::string ALIVE("alive");
+
+std::string* get_string(std::string* msg, const std::string* header) {
+    if (msg->length() < header->length()) {
+        return NULL;
+    }
+    long pos;
+    if ((pos = msg->find(*header)) == -1) {
+        return NULL;
+    }
+    std::string ret = msg->substr(pos+header->length());
+    return &ret;
+}
+
+void parse_broadcast(Command* command, std::string* msg) {
+    std::string* broadcast = get_string(msg, &BROADCAST);
+    command->broadcast = broadcast;
+}
+
+void parse_heartbeat(NodeThread* nodeThread, int sockfd, std::string* msg) {
+    std::string* str_id = get_string(msg, &HEARTBEAT);
+    if (str_id == NULL) {
+        return;
+    }
+    int id = atoi(&str_id->front());
+    if (debug) {
+        std::cout << "got id for " << id << std::endl;
+    }
+    if (!nodeThread->socket_map->contains(sockfd)) {
+        nodeThread->socket_map->put(sockfd, NULL);
+    }
+
+    if (!nodeThread->process_map->contains(id)) {
+        nodeThread->process_map->put(id, NULL);
+    }
+
+    nodeThread->socket_map->get(sockfd)->second = &nodeThread->process_map->get(id)->first;
+    nodeThread->process_map->get(sockfd)->second = &nodeThread->socket_map->get(id)->first;
+}
+
+void parse_alive(NodeThread* nodeThread, std::string* msg) {
+    std::string* str_alive = get_string(msg, &ALIVE);
+//    if (str_alive == NULL) {
+//        return;
+//    }
+    std::string str("alive ");
+    for (auto it = nodeThread->process_map->it(); it != nodeThread->process_map->end(); ++it) {
+        str.append(std::to_string(it->first));
+        str.append(",");
+    }
+
+    std::cout << str.substr(0,str.length()-1) << std::endl;
+}
+
+Command* command_parse_message(std::string* msg) {
+    Command command;
+    parse_broadcast(&command, msg);
+    return &command;
+}
+
 void message_reader(NodeThread * nodeThread) {
     while (nodeThread->is_alive.load()) {
-        char* txt = nodeThread->message_in_queue->pop();
-//        ChatMessage chatMessage;
-//        if (!chatMessage.ParseFromString(txt)) {
-//            std::cout << "error parsing string" << std::endl;
-//        }
-        MessageId messageId;
-//        messageId.lc_id = chatMessage.lc_id();
-//        messageId.from_id = chatMessage.from_id();
-//        messageId.to_id = chatMessage.to_id();
-        if (nodeThread->message_set->find(messageId) == nodeThread->message_set->end()) {
-            std::cout << txt << std::endl;
-            nodeThread->message_set->insert(messageId);
-        } else {
-            std::cout << "already recieved this message" << std::endl;
+        Message* txt = nodeThread->message_in_queue->pop();
+        std::string msg(txt->message);
+        Command* command = command_parse_message(&msg);
+        if (command->broadcast != NULL) {
+            std::cout << *command->broadcast<< std::endl;
         }
 
-
+        parse_heartbeat(nodeThread, txt->sockfd, &msg);
+        parse_alive(nodeThread, &msg);
     }
 }
 
@@ -305,11 +481,12 @@ int main(int argc, char * argv[]) {
 
     const int max_num_sockets = 4;
 
-    ConcurrentQueue<char*> message_in_queue;
+    ConcurrentQueue<Message*> message_in_queue;
     ConcurrentQueue<Packet> message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)> message_set(100, message_id_hash);
     int client_socket[max_num_sockets];
-    BiMap<int, int> socket_map;
+    ConcurrentMap<int, const int*> socket_map;
+    ConcurrentMap<int, const int*> process_map;
 
     NodeThread nodeThread;
 //    nodeThread.address = "localhost";
@@ -318,7 +495,8 @@ int main(int argc, char * argv[]) {
     nodeThread.message_out_queue = &message_out_queue;
     nodeThread.message_set = &message_set;
     nodeThread.is_alive.store(true);
-    nodeThread.socket_map = socket_map;
+    nodeThread.socket_map = &socket_map;
+    nodeThread.process_map = &process_map;
     nodeThread.port_num = port;
 
 
