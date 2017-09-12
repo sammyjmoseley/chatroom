@@ -15,6 +15,8 @@
 #include <netdb.h>
 #include <set>
 #include <string>
+#include <chrono>
+
 const bool debug = true;
 int NULL_INT = 0;
 
@@ -75,6 +77,10 @@ public:
         }
     }
 };
+
+long millis_time() {
+    return std::chrono::high_resolution_clock::now().time_since_epoch().count();
+}
 
 template <class K, class V>
 class ConcurrentMap {
@@ -220,6 +226,11 @@ public:
     }
 };
 
+struct SockProp {
+    const int* process;
+    long timestamp;
+};
+
 
 struct NodeThread {
     int port_num;
@@ -229,7 +240,7 @@ struct NodeThread {
     ConcurrentQueue<Packet>* message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)>* message_set;
     ConcurrentMap<int, const int*>* process_map; // process_id -> socket_fd
-    ConcurrentMap<int, const int*>* socket_map; //socket_fd -> process_id
+    ConcurrentMap<int, SockProp*>* socket_map; //socket_fd -> process_id
 
     void (*conn_accepter)(int newsockfd, char* buffer, NodeThread* node_thread);
 };
@@ -241,6 +252,7 @@ void error(const char *msg) {
 
 
 void create_socket(NodeThread * node_thread) {
+
     int sockfd;
     int opt = true;
     socklen_t clilen;
@@ -273,7 +285,7 @@ void create_socket(NodeThread * node_thread) {
 
         FD_SET(sockfd, &readfds);
         int max_fd = sockfd;
-        for (std::map<int, const int*>::iterator it = node_thread->socket_map->it();
+        for (std::map<int, SockProp*>::iterator it = node_thread->socket_map->it();
              it != node_thread->socket_map->end();
              ++it) {
             int sd = it->first;
@@ -315,7 +327,9 @@ void create_socket(NodeThread * node_thread) {
 //            }
 
             puts("Welcome message sent successfully");
-            node_thread->socket_map->put(new_socket, &NULL_INT);
+            SockProp sockProp;
+            sockProp.timestamp = millis_time();
+            node_thread->socket_map->put(new_socket, &sockProp);
 
 
         }
@@ -346,8 +360,8 @@ void create_socket(NodeThread * node_thread) {
 
                     //Close the socket and mark as 0 in list for reuse
                     close( sd );
-                    if (node_thread->process_map->contains(*it->second)) {
-                        node_thread->process_map->remove(*it->second);
+                    if (node_thread->process_map->contains(*it->second->process)) {
+                        node_thread->process_map->remove(*it->second->process);
                     }
                     removeBucket.insert(it->first);
                 }
@@ -385,8 +399,9 @@ struct Command {
     heartbeat* beat;
 };
 
+const std::string HEARTBEAT_ID("heartbeat ");
 const std::string BROADCAST("broadcast ");
-const std::string HEARTBEAT("heartbeat ");
+const std::string HEARTBEAT("heartbeat");
 const std::string DEADSIGNL("deadsignl ");
 const std::string ALIVE("alive");
 
@@ -407,8 +422,16 @@ void parse_broadcast(Command* command, std::string* msg) {
     command->broadcast = broadcast;
 }
 
-void parse_heartbeat(NodeThread* nodeThread, int sockfd, std::string* msg) {
-    std::string* str_id = get_string(msg, &HEARTBEAT);
+void parse_heartbeat(NodeThread *nodeThread, int sockfd, std::string *msg) {
+    std::string* str_beat = get_string(msg, &HEARTBEAT);
+    if (str_beat == NULL) {
+        return;
+    }
+    nodeThread->socket_map->get(sockfd)->second->timestamp = millis_time();
+}
+
+void parse_id_update(NodeThread *nodeThread, int sockfd, std::string *msg) {
+    std::string* str_id = get_string(msg, &HEARTBEAT_ID);
     if (str_id == NULL) {
         return;
     }
@@ -424,15 +447,15 @@ void parse_heartbeat(NodeThread* nodeThread, int sockfd, std::string* msg) {
         nodeThread->process_map->put(id, NULL);
     }
 
-    nodeThread->socket_map->get(sockfd)->second = &nodeThread->process_map->get(id)->first;
+    nodeThread->socket_map->get(sockfd)->second->process = &nodeThread->process_map->get(id)->first;
     nodeThread->process_map->get(sockfd)->second = &nodeThread->socket_map->get(id)->first;
 }
 
 void parse_alive(NodeThread* nodeThread, std::string* msg) {
     std::string* str_alive = get_string(msg, &ALIVE);
-//    if (str_alive == NULL) {
-//        return;
-//    }
+    if (str_alive == NULL) {
+        return;
+    }
     std::string str("alive ");
     for (auto it = nodeThread->process_map->it(); it != nodeThread->process_map->end(); ++it) {
         str.append(std::to_string(it->first));
@@ -457,7 +480,7 @@ void message_reader(NodeThread * nodeThread) {
             std::cout << *command->broadcast<< std::endl;
         }
 
-        parse_heartbeat(nodeThread, txt->sockfd, &msg);
+        parse_id_update(nodeThread, txt->sockfd, &msg);
         parse_alive(nodeThread, &msg);
     }
 }
@@ -485,7 +508,7 @@ int main(int argc, char * argv[]) {
     ConcurrentQueue<Packet> message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)> message_set(100, message_id_hash);
     int client_socket[max_num_sockets];
-    ConcurrentMap<int, const int*> socket_map;
+    ConcurrentMap<int, SockProp*> socket_map;
     ConcurrentMap<int, const int*> process_map;
 
     NodeThread nodeThread;
