@@ -360,7 +360,8 @@ void create_socket(NodeThread * node_thread) {
 
                     //Close the socket and mark as 0 in list for reuse
                     close( sd );
-                    if (node_thread->process_map->contains(*it->second->process)) {
+                    int* k = (int*) it->second->process;
+                    if (k != NULL && node_thread->process_map->contains(*k)) {
                         node_thread->process_map->remove(*it->second->process);
                     }
                     removeBucket.insert(it->first);
@@ -387,22 +388,16 @@ void create_socket(NodeThread * node_thread) {
         }
     }
 }
-
-struct heartbeat {
-    int sockfd;
-    int process_id;
-};
-
 struct Command {
     std::string* broadcast;
     hostent* connect;
-    heartbeat* beat;
 };
 
 const std::string HEARTBEAT_ID("heartbeat ");
 const std::string BROADCAST("broadcast ");
 const std::string HEARTBEAT("heartbeat");
 const std::string DEADSIGNL("deadsignl ");
+const std::string CONNECT("connect ");
 const std::string ALIVE("alive");
 
 std::string* get_string(std::string* msg, const std::string* header) {
@@ -465,6 +460,42 @@ void parse_alive(NodeThread* nodeThread, std::string* msg) {
     std::cout << str.substr(0,str.length()-1) << std::endl;
 }
 
+void parse_connect(NodeThread* nodeThread, std::string* msg) {
+    std::string* str_connect = get_string(msg, &CONNECT);
+    if (str_connect == NULL) {
+        return;
+    }
+
+    long pos = str_connect->find(":");
+    long end_line = str_connect->find("\n");
+    std::string host = str_connect->substr(0, pos);
+    std::string port = str_connect->substr(pos+1, end_line-pos-1);
+
+    struct addrinfo hints, *res;
+    int sockfd;
+
+// first, load up address structs with getaddrinfo():
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_INET;  // use IPv4 or IPv6, whichever
+    hints.ai_socktype = SOCK_STREAM;
+
+// we could put "80" instead on "http" on the next line:
+    getaddrinfo(host.c_str(), port.c_str(), &hints, &res);
+
+// make a socket:
+
+    sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+
+// connect it to the address and port we passed in to getaddrinfo():
+
+    connect(sockfd, res->ai_addr, res->ai_addrlen);
+
+    char* buffer = "hello";
+    write(sockfd, buffer, strlen(buffer));
+    close(sockfd);
+}
+
 Command* command_parse_message(std::string* msg) {
     Command command;
     parse_broadcast(&command, msg);
@@ -482,6 +513,7 @@ void message_reader(NodeThread * nodeThread) {
 
         parse_id_update(nodeThread, txt->sockfd, &msg);
         parse_alive(nodeThread, &msg);
+        parse_connect(nodeThread, &msg);
     }
 }
 

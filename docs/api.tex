@@ -1,0 +1,44 @@
+\documentclass[12pt]{article}
+\begin{document}
+\begin{table}[!h]
+	\centering
+	\begin{tabular}{|p{5cm}|p{3.5cm}|p{6.5cm}|}
+		\hline
+		Input$\to$Master & Master$\to$Server & Comments \\
+		\hline
+		\hline
+		$\langle id\rangle$ start $\langle n\rangle$ $\langle port\rangle$& --- &
+		master starts a process with \texttt{./process id n port} \\
+		\hline
+		exit & --- & master calls \texttt{./stopall} then exits\\
+		\hline
+		sleep $\langle n \rangle$ & --- & master sleeps for $n$ milliseconds\\
+		\hline
+		$\langle id\rangle$ crash & --- & The master crashes the given process using a kill signal. Your \texttt{process} must be compatible with this.\\
+		\hline
+		\hline
+		$\langle id\rangle$ get & get & the receiver responds to the master with its message log\\
+		\hline
+		$\langle id\rangle$ alive & alive & the receiver responds to the master with the ids all processes it thinks are alive\\
+		\hline
+		$\langle id\rangle$ broadcast $\langle message\rangle$ & broadcast $\langle message\rangle$ & the receiver broadcasts the given message to everyone alive, including themselves\\
+		\hline
+		--- & connect $\langle host \rangle$:$\langle port \rangle$ & connect to host:port \\
+		\hline
+	\end{tabular}
+	\caption{Table of commands.
+		The left column shows commands provided as input to the master;
+		the center column the corresponding commands issued by the master to the servers.}
+	\label{tab:commands}
+\end{table}
+\begin{table}[!h]
+	\centering
+	\begin{tabular}{|p{5cm}|p{6.5cm}|}
+		\hline
+		Server$\to$Server  & Comments \\
+		\hline
+		message $\langle message \rangle$ & the receiver registers a message and does nothing with it \\
+		\hline
+	\end{tabular}
+\end{table}
+\end{document}
