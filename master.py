@@ -185,6 +185,7 @@ def main(debug=False):
             threads[pid] = handler
             handler.start()
         elif cmd == 'get' or cmd == 'alive':
+            time.sleep(1)
             send(pid, sp1[1], set_wait_ack=True)
         elif cmd == 'broadcast':
             send(pid, sp1[1])

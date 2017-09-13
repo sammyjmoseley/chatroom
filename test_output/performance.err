@@ -1,3 +1,0 @@
-src(40367,0x700008e3f000) malloc: *** error for object 0x7faa1d402a48: pointer being freed was not allocated
-*** set a breakpoint in malloc_error_break to debug
-./process: line 2: 40367 Abort trap: 6           src/bin/src $1 $2 $3
