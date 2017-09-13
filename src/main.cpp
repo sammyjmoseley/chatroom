@@ -18,7 +18,7 @@
 #include <chrono>
 #include <unistd.h>
 #define DEBUG false
-#define HR 2000000
+#define HR 500000
 
 
 struct Message {
@@ -293,7 +293,7 @@ void create_socket(NodeThread * node_thread) {
 //            {
 //                perror("send");
 //            }
-            
+
             SockProp* sockProp = new SockProp();
             sockProp->timestamp = now();
             node_thread->socket_map->put(new_socket, sockProp);
@@ -417,12 +417,23 @@ void get_messages(NodeThread *nodeThread, std::string *msg) {
     if (str_msg == NULL) {
         return;
     }
-    std::string str("messages ");
+    std::string* str = new std::string("messages ");
     for (int i = 0; i < nodeThread->msg_list->get_size(); i++) {
-        str.append(nodeThread->msg_list->get(i));
-        str.append(",");
+        str->append(nodeThread->msg_list->get(i));
+        str->append(",");
     }
-    std::cout << str.substr(0,str.length()-1) << std::endl;
+    std::string msg_out = str->substr(0,str->length()-1);
+    msg_out.append("\n");
+    if (DEBUG) {
+        std::cout << msg_out << std::endl;
+    }
+    if (nodeThread->process_map->contains(-1)) {
+        Message *message = new Message();
+        message->sockfd = *nodeThread->process_map->get(-1)->second;
+        message->message = msg_out.c_str();
+        message->message_len = msg_out.length();
+        nodeThread->message_out_queue->push(message);
+    }
 }
 
 void parse_id_update(NodeThread *nodeThread, int sockfd, std::string *msg) {
@@ -451,13 +462,28 @@ void parse_alive(NodeThread* nodeThread, std::string* msg) {
     if (str_alive == NULL) {
         return;
     }
-    std::string str("alive ");
+    auto str = new std::string("alive ");
+    str->append(std::to_string(nodeThread->my_id));
+    str->append(",");
     for (auto it = nodeThread->process_map->it(); it != nodeThread->process_map->end(); ++it) {
-        str.append(std::to_string(it->first));
-        str.append(",");
+        if (it->first == -1) {
+            continue;
+        }
+        str->append(std::to_string(it->first));
+        str->append(",");
     }
-
-    std::cout << str.substr(0,str.length()-1) << std::endl;
+    std::string* msg_out = new std::string(str->substr(0,str->length()-1));
+    msg_out->append("\n");
+    if (DEBUG) {
+        std::cout << msg_out << std::endl;
+    }
+    if (nodeThread->process_map->contains(-1)) {
+        Message *message = new Message();
+        message->sockfd = *nodeThread->process_map->get(-1)->second;
+        message->message = msg_out->c_str();
+        message->message_len = msg_out->length();
+        nodeThread->message_out_queue->push(message);
+    }
 }
 
 void parse_connect(NodeThread* nodeThread, std::string* msg) {
@@ -465,11 +491,15 @@ void parse_connect(NodeThread* nodeThread, std::string* msg) {
     if (str_connect == NULL) {
         return;
     }
-
-    long pos = str_connect->find(":");
+    long space_pos = str_connect->find(" ");
+    long semi_pos = str_connect->find(":");
     long end_line = str_connect->find("\n");
-    std::string host = str_connect->substr(0, pos);
-    std::string port = str_connect->substr(pos+1, end_line-pos-1);
+    std::string id = str_connect->substr(0, space_pos);
+    if (nodeThread->process_map->contains(atoi(id.c_str()))) {
+        return;
+    }
+    std::string host = str_connect->substr(space_pos + 1UL, semi_pos-space_pos-1UL);
+    std::string port = str_connect->substr(semi_pos + 1UL, end_line-semi_pos-1UL);
 
     struct addrinfo hints, *res;
     int sockfd;
@@ -507,6 +537,10 @@ void message_reader(NodeThread * nodeThread) {
         if (command->broadcast != NULL) {
             std::string msg_body("message ");
             msg_body.append(*command->broadcast);
+            if (msg_body.find("\n") != msg_body.length()-1) {
+                msg_body.append("\n");
+            }
+            nodeThread->msg_list->put(*command->broadcast);
 
             for (auto it = nodeThread->socket_map->it(); it != nodeThread->socket_map->end(); ++it) {
                 Message* msg_out = new Message();

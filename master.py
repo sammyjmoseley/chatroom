@@ -10,7 +10,6 @@ import sys
 import time
 from socket import SOCK_STREAM, socket, AF_INET
 from threading import Thread
-import message_pb2 as message
 
 address = 'localhost'
 threads = {}  # ends up keeping track of who is alive
@@ -26,6 +25,8 @@ class ClientHandler(Thread):
         self.buffer = ""
         self.valid = True
         self.process = process
+        self.address = address
+        self.port = port
 
     def run(self):
         global threads, wait_ack
@@ -42,6 +43,15 @@ class ClientHandler(Thread):
                     sys.stdout.write(l + '\n')
                     sys.stdout.flush()
                     wait_ack = False
+                elif s[0] == 'heartbeat':
+                    for pid in threads:
+                        thread = threads[pid]
+                        if thread.index == self.index:
+                            continue
+                        thread.send("connect " + str(self.index) + " " + self.address + ":" + str(self.port))
+                    self.send("heartbeat -1")
+                elif s[0] == 'message':
+                    pass
                 else:
                     print "Invalid Response: " + l
             else:
@@ -64,7 +74,6 @@ class ClientHandler(Thread):
     def send(self, s):
         if self.valid:
             self.sock.send(str(s) + '\n')
-            print "sent"
 
     def close(self):
         try:
@@ -106,6 +115,7 @@ def send(index, data, set_wait_ack=False):
 
     if set_wait_ack:
         wait_ack = True
+    print "sending " + data
     threads[pid].send(data)
 
 
@@ -134,10 +144,6 @@ def main(debug=False):
     global threads, wait_ack
     timeout_thread = Thread(target=timeout, args=())
     timeout_thread.start()
-    chatMessage = message.TextMessage()
-    chatMessage.message="hello"
-    message.TextMessage.ParseFromString(chatMessage, chatMessage.SerializeToString())
-    print chatMessage.__str__()
 
     while True:
         line = ''
@@ -185,6 +191,8 @@ def main(debug=False):
         elif cmd == 'crash':
             kill(pid)
             time.sleep(1)  # sleep for a bit so that crash is detected
+        elif cmd == 'heartbeat':
+            pass
         else:
             print "Invalid command: " + line
 
