@@ -16,19 +16,15 @@
 #include <set>
 #include <string>
 #include <chrono>
+#include <unistd.h>
+#define DEBUG true
+#define HR 2000000
 
-const bool debug = true;
-int NULL_INT = 0;
-
-struct Packet {
-    int id;
-    int client_socket;
-};
 
 struct Message {
     int sockfd;
-    char* message;
-    int message_len;
+    const char* message;
+    unsigned long message_len;
 };
 
 struct MessageId {
@@ -58,7 +54,7 @@ public:
             queue.push(elem);
         }
         catch (std::logic_error&) {
-            std::cout << "[exception caught]\n";
+            std::cout << "[exception caught]" << std::endl;
         }
         cv.notify_one();
     }
@@ -73,12 +69,12 @@ public:
             return ret;
         }
         catch (std::logic_error&) {
-            std::cout << "[exception caught]\n";
+            std::cout << "[exception caught]" << std::endl;
         }
     }
 };
 
-long millis_time() {
+long now() {
     return std::chrono::high_resolution_clock::now().time_since_epoch().count();
 }
 
@@ -237,7 +233,7 @@ struct NodeThread {
     int my_id;
     std::atomic<bool> is_alive;
     ConcurrentQueue<Message*>* message_in_queue;
-    ConcurrentQueue<Packet>* message_out_queue;
+    ConcurrentQueue<Message*>* message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)>* message_set;
     ConcurrentMap<int, const int*>* process_map; // process_id -> socket_fd
     ConcurrentMap<int, SockProp*>* socket_map; //socket_fd -> process_id
@@ -327,9 +323,9 @@ void create_socket(NodeThread * node_thread) {
 //            }
 
             puts("Welcome message sent successfully");
-            SockProp sockProp;
-            sockProp.timestamp = millis_time();
-            node_thread->socket_map->put(new_socket, &sockProp);
+            SockProp* sockProp = new SockProp();
+            sockProp->timestamp = now();
+            node_thread->socket_map->put(new_socket, sockProp);
 
 
         }
@@ -398,6 +394,7 @@ const std::string BROADCAST("broadcast ");
 const std::string HEARTBEAT("heartbeat");
 const std::string DEADSIGNL("deadsignl ");
 const std::string CONNECT("connect ");
+const std::string MESSAGE("message ");
 const std::string ALIVE("alive");
 
 std::string* get_string(std::string* msg, const std::string* header) {
@@ -408,8 +405,8 @@ std::string* get_string(std::string* msg, const std::string* header) {
     if ((pos = msg->find(*header)) == -1) {
         return NULL;
     }
-    std::string ret = msg->substr(pos+header->length());
-    return &ret;
+    std::string* ret = new std::string(msg->substr(pos+header->length()));
+    return ret;
 }
 
 void parse_broadcast(Command* command, std::string* msg) {
@@ -422,7 +419,16 @@ void parse_heartbeat(NodeThread *nodeThread, int sockfd, std::string *msg) {
     if (str_beat == NULL) {
         return;
     }
-    nodeThread->socket_map->get(sockfd)->second->timestamp = millis_time();
+
+    nodeThread->socket_map->get(sockfd)->second->timestamp = now();
+}
+
+void parse_message(NodeThread *nodeThread, std::string *msg) {
+    std::string* str_msg = get_string(msg, &MESSAGE);
+    if (str_msg == NULL) {
+        return;
+    }
+    std::cout << str_msg->c_str() << std::endl;
 }
 
 void parse_id_update(NodeThread *nodeThread, int sockfd, std::string *msg) {
@@ -431,7 +437,7 @@ void parse_id_update(NodeThread *nodeThread, int sockfd, std::string *msg) {
         return;
     }
     int id = atoi(&str_id->front());
-    if (debug) {
+    if (DEBUG) {
         std::cout << "got id for " << id << std::endl;
     }
     if (!nodeThread->socket_map->contains(sockfd)) {
@@ -443,7 +449,7 @@ void parse_id_update(NodeThread *nodeThread, int sockfd, std::string *msg) {
     }
 
     nodeThread->socket_map->get(sockfd)->second->process = &nodeThread->process_map->get(id)->first;
-    nodeThread->process_map->get(sockfd)->second = &nodeThread->socket_map->get(id)->first;
+    nodeThread->process_map->get(id)->second = &nodeThread->socket_map->get(sockfd)->first;
 }
 
 void parse_alive(NodeThread* nodeThread, std::string* msg) {
@@ -474,51 +480,114 @@ void parse_connect(NodeThread* nodeThread, std::string* msg) {
     struct addrinfo hints, *res;
     int sockfd;
 
-// first, load up address structs with getaddrinfo():
-
     memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_INET;  // use IPv4 or IPv6, whichever
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-
-// we could put "80" instead on "http" on the next line:
     getaddrinfo(host.c_str(), port.c_str(), &hints, &res);
-
-// make a socket:
-
     sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-
-// connect it to the address and port we passed in to getaddrinfo():
 
     connect(sockfd, res->ai_addr, res->ai_addrlen);
 
-    char* buffer = "hello";
-    write(sockfd, buffer, strlen(buffer));
-    close(sockfd);
+    SockProp* sockProp = new SockProp();
+    sockProp->process = NULL;
+    sockProp->timestamp = now();
+
+    nodeThread->socket_map->put(sockfd, sockProp);
 }
 
 Command* command_parse_message(std::string* msg) {
-    Command command;
-    parse_broadcast(&command, msg);
-    return &command;
+    Command* command = new Command();
+    parse_broadcast(command, msg);
+    return command;
 }
 
 void message_reader(NodeThread * nodeThread) {
     while (nodeThread->is_alive.load()) {
         Message* txt = nodeThread->message_in_queue->pop();
+        if (DEBUG) {
+            std::cout << "Recieved message: " << txt->message << std::endl;
+        }
         std::string msg(txt->message);
         Command* command = command_parse_message(&msg);
+
         if (command->broadcast != NULL) {
-            std::cout << *command->broadcast<< std::endl;
+            std::string msg_body("message ");
+            msg_body.append(*command->broadcast);
+
+            for (auto it = nodeThread->socket_map->it(); it != nodeThread->socket_map->end(); ++it) {
+                Message* msg = new Message();
+                msg->sockfd = it->first;
+                msg->message = msg_body.c_str();
+                msg->message_len = msg_body.length();
+                nodeThread->message_out_queue->push(msg);
+            }
         }
 
+        parse_heartbeat(nodeThread, txt->sockfd, &msg);
         parse_id_update(nodeThread, txt->sockfd, &msg);
         parse_alive(nodeThread, &msg);
         parse_connect(nodeThread, &msg);
+        parse_message(nodeThread, &msg);
     }
 }
 
-void message_writer(NodeThread nodeThread) {
-    while(nodeThread.is_alive.load()) {
+void message_writer(NodeThread* nodeThread) {
+    while(nodeThread->is_alive.load()) {
+        Message* packet = nodeThread->message_out_queue->pop();
+        write(packet->sockfd, packet->message, packet->message_len);
+    }
+}
+
+void heart_pump(NodeThread* nodeThread) {
+    std::string* heart_msg = new std::string(HEARTBEAT_ID);
+    heart_msg->append(std::to_string(nodeThread->my_id));
+    heart_msg->append("\n");
+    while(nodeThread->is_alive.load()) {
+        usleep(HR);
+        for (auto it = nodeThread->socket_map->it(); it != nodeThread->socket_map->end(); ++it) {
+            Message* message = new Message();
+            message->sockfd = it->first;
+            message->message = heart_msg->c_str();
+            message->message_len = heart_msg ->length();
+            nodeThread->message_out_queue->push(message);
+        }
+    }
+}
+
+void clear_sockets(NodeThread* nodeThread) {
+    std::map<int, long>* timestamps = new std::map<int, long>();
+    while(nodeThread->is_alive.load()) {
+        usleep(3*HR);
+        std::set<int>* old_socket_fd = new std::set<int>();
+        std::set<int>* old_proceesses = new std::set<int>();
+
+        for (auto it = nodeThread->socket_map->it() ; it != nodeThread->socket_map->end(); ++it) {
+            if (timestamps->find(it->first) == timestamps->end()) {
+                timestamps->insert({{it->first, it->second->timestamp}});
+            } else {
+                if (timestamps->find(it->first)->second >= it->second->timestamp) {
+                    old_socket_fd->insert(it->first);
+                } else {
+                    timestamps->erase(it->first);
+                    timestamps->insert({{it->first, it->second->timestamp}});
+                }
+            }
+        }
+
+        for (auto it = nodeThread->process_map->it(); it != nodeThread->process_map->end(); ++it) {
+            if (old_socket_fd->find(*it->second) != old_socket_fd->end()) {
+                old_proceesses->insert(it->first);
+            }
+        }
+
+        for (int fd : *old_socket_fd) {
+            nodeThread->socket_map->remove(fd);
+        }
+
+        for (int ps : *old_proceesses) {
+            nodeThread->process_map->remove(ps);
+        }
+
 
     }
 }
@@ -537,29 +606,38 @@ int main(int argc, char * argv[]) {
     const int max_num_sockets = 4;
 
     ConcurrentQueue<Message*> message_in_queue;
-    ConcurrentQueue<Packet> message_out_queue;
+    ConcurrentQueue<Message*> message_out_queue;
     std::unordered_set<MessageId, decltype(&message_id_hash)> message_set(100, message_id_hash);
     int client_socket[max_num_sockets];
     ConcurrentMap<int, SockProp*> socket_map;
     ConcurrentMap<int, const int*> process_map;
 
-    NodeThread nodeThread;
+    NodeThread* nodeThread = new NodeThread();
 //    nodeThread.address = "localhost";
-    nodeThread.my_id = id;
-    nodeThread.message_in_queue = &message_in_queue;
-    nodeThread.message_out_queue = &message_out_queue;
-    nodeThread.message_set = &message_set;
-    nodeThread.is_alive.store(true);
-    nodeThread.socket_map = &socket_map;
-    nodeThread.process_map = &process_map;
-    nodeThread.port_num = port;
+    nodeThread->my_id = id;
+    nodeThread->message_in_queue = &message_in_queue;
+    nodeThread->message_out_queue = &message_out_queue;
+    nodeThread->message_set = &message_set;
+    nodeThread->is_alive.store(true);
+    nodeThread->socket_map = &socket_map;
+    nodeThread->process_map = &process_map;
+    nodeThread->port_num = port;
 
 
-    std::thread connection_thread(create_socket, &nodeThread);
+    std::thread connection_thread(create_socket, nodeThread);
 
-    std::thread reading_thread(message_reader, &nodeThread);
+    std::thread reading_thread(message_reader, nodeThread);
 
+    std::thread writing_thread(message_writer, nodeThread);
+
+    std::thread heart(heart_pump, nodeThread);
+
+    std::thread cleanup(clear_sockets, nodeThread);
+
+    connection_thread.join();
     reading_thread.join();
+    writing_thread.join();
+    heart.join();
 
     std::cout << std::endl;
 

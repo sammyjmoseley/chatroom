@@ -33,12 +33,16 @@
 \end{table}
 \begin{table}[!h]
 	\centering
-	\begin{tabular}{|p{5cm}|p{6.5cm}|}
+	\begin{tabular}{|p{5cm}|p{5cm}|p{5cm}|}
 		\hline
-		Server$\to$Server  & Comments \\
+		Server$\to$Server  & Server$\to$Master& Comments \\
 		\hline
-		message $\langle message \rangle$ & the receiver registers a message and does nothing with it \\
+		message $\langle message \rangle$ & --- & the receiver registers a message and does nothing with it \\
+		\hline
+		heartbeat $\langle id \rangle$ & heartbeat $\langle id \rangle$ & alerts the master or server that the socket is still alive \\
 		\hline
 	\end{tabular}
 \end{table}
+
+
 \end{document}
