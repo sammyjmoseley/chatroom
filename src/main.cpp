@@ -17,7 +17,7 @@
 #include <string>
 #include <chrono>
 #include <unistd.h>
-#define DEBUG true
+#define DEBUG false
 #define HR 2000000
 
 
@@ -115,80 +115,39 @@ public:
 
 };
 
-template <class L, class R>
-class BiMap {
-    std::map<L, R> left;
-    std::map<R, L> right;
-
-    void removeLeftHelper(L l) {
-        typename std::map<L, R>::const_iterator itL = left.find(l);
-        if (itL == left.end()) {
-            return;
-        }
-
-        left.erase(itL);
-    }
-
-    void removeRightHelper(R r) {
-        typename std::map<R, L>::const_iterator itR = right.find(r);
-        if (itR == left.end()) {
-            return;
-        }
-        right.erase(itR);
-    }
-
+template<class T>
+class ArrayList {
+    T* list;
+    int size;
+    int max_size;
 public:
-    void add(L l, R r) {
-        std::map<int, int>::iterator lit = left.find(l);
-        if (!(lit == left.end())) {
-            removeRightHelper(lit->second);
-            removeLeftHelper(lit->first);
-        }
-
-        std::map<int, int>::iterator rit = right.find(r);
-        if (!(rit == right.end())) {
-            removeLeftHelper(rit->second);
-            removeRightHelper(rit->first);
-        }
-
-
-        left.insert(std::pair<L, R>(l, r));
-        right.insert(std::pair<L, R>(r, l));
+    ArrayList() {
+        list = new T[10];
+        size = 0;
+        max_size = 10;
     }
 
-    void removeLeft(L l) {
-        typename std::map<L, R>::iterator itL = left.find(l);
-        if (itL == left.end()) {
-            return;
-        }
-        removeRightHelper(itL->second);
-        left.erase(itL);
+    T get(int idx) {
+        return list[idx];
     }
 
-    void removeRight(R r) {
-        typename std::map<R, L>::iterator itR = right.find(r);
-        if (itR == right.end()) {
-            return;
+    T put(T val) {
+        if (size == max_size) {
+            int new_size = max_size*2;
+            T* new_list = new T[new_size];
+            for (int i = 0; i < max_size; i++) {
+                new_list[i] = list[i];
+            }
+            max_size = new_size;
+            delete list;
         }
-        removeLeftHelper(itR->second);
-        right.erase(itR);
+        list[size++] = val;
     }
 
-    typename std::map<L, R>::iterator beginLeft() {
-        return left.begin();
-    };
+    int get_size() {
+        return size;
+    }
 
-    typename std::map<R, L>::iterator beginRight() {
-        return right.begin();
-    };
-
-    typename std::map<L, R>::iterator endLeft() {
-        return left.end();
-    };
-
-    typename std::map<R, L>::iterator endRight() {
-        return right.end();
-    };
 };
 
 template<class T>
@@ -237,6 +196,7 @@ struct NodeThread {
     std::unordered_set<MessageId, decltype(&message_id_hash)>* message_set;
     ConcurrentMap<int, const int*>* process_map; // process_id -> socket_fd
     ConcurrentMap<int, SockProp*>* socket_map; //socket_fd -> process_id
+    ArrayList<std::string>* msg_list;
 
     void (*conn_accepter)(int newsockfd, char* buffer, NodeThread* node_thread);
 };
@@ -276,6 +236,10 @@ void create_socket(NodeThread * node_thread) {
 
     fd_set readfds;
 
+    timeval* timeout = new timeval();
+    timeout->tv_sec = 1L;
+    timeout->tv_usec = 0L;
+
     while (node_thread -> is_alive) {
         FD_ZERO(&readfds);
 
@@ -285,22 +249,27 @@ void create_socket(NodeThread * node_thread) {
              it != node_thread->socket_map->end();
              ++it) {
             int sd = it->first;
+
             if (sd > 0) {
                 FD_SET(sd, &readfds);
+                if (DEBUG) {
+                    std::cout << "Listening on " << sd << std::endl;
+                }
             }
             if (sd > max_fd) {
                 max_fd = sd;
             }
         }
 
-        int activity = select(max_fd + 1, &readfds, NULL, NULL, NULL);
+
+
+        int activity = select(max_fd + 1, &readfds, NULL, NULL, timeout);
 
         if ((activity < 0) && errno != EINTR) {
             printf("select error");
         }
 
-        if (FD_ISSET(sockfd, &readfds))
-        {
+        if (FD_ISSET(sockfd, &readfds)) {
             int new_socket;
             struct sockaddr_in address;
             int addrlen = sizeof(address);
@@ -313,16 +282,18 @@ void create_socket(NodeThread * node_thread) {
             }
 
             //inform user of socket number - used in send and receive commands
-            printf("New connection , socket fd is %d , ip is : %s , port : %d \n" , new_socket , inet_ntoa(address.sin_addr) , ntohs
-            (address.sin_port));
+            if (DEBUG) {
+                printf("New connection , socket fd is %d , ip is : %s , port : %d \n", new_socket,
+                       inet_ntoa(address.sin_addr), ntohs
+                       (address.sin_port));
+            }
 
             //send new connection greeting message
 //            if( send(new_socket, message, strlen(message), 0) != strlen(message) )
 //            {
 //                perror("send");
 //            }
-
-            puts("Welcome message sent successfully");
+            
             SockProp* sockProp = new SockProp();
             sockProp->timestamp = now();
             node_thread->socket_map->put(new_socket, sockProp);
@@ -341,7 +312,7 @@ void create_socket(NodeThread * node_thread) {
                 //Check if it was for closing , and also read the
                 //incoming message
                 int valread;
-                char buffer[1024];
+                char* buffer = new char[1024];
                 sockaddr_in address;
                 int addrlen = sizeof(addrlen);
 
@@ -351,8 +322,10 @@ void create_socket(NodeThread * node_thread) {
                     //Somebody disconnected , get his details and print
                     getpeername(sd , (struct sockaddr*)&address , \
                         (socklen_t*)&addrlen);
-                    printf("Host disconnected , ip %s , port %d \n" ,
-                           inet_ntoa(address.sin_addr) , ntohs(address.sin_port));
+                    if (DEBUG) {
+                        printf("Host disconnected , ip %s , port %d \n",
+                               inet_ntoa(address.sin_addr), ntohs(address.sin_port));
+                    }
 
                     //Close the socket and mark as 0 in list for reuse
                     close( sd );
@@ -368,11 +341,11 @@ void create_socket(NodeThread * node_thread) {
                     //set the string terminating NULL byte on the end
                     //of the data read
                     buffer[valread] = '\0';
-                    Message message;
-                    message.message = buffer;
-                    message.message_len = valread;
-                    message.sockfd = sd;
-                    node_thread->message_in_queue->push(&message);
+                    Message* message = new Message();
+                    message->message = buffer;
+                    message->message_len = valread;
+                    message->sockfd = sd;
+                    node_thread->message_in_queue->push(message);
                 }
             }
 
@@ -396,16 +369,21 @@ const std::string DEADSIGNL("deadsignl ");
 const std::string CONNECT("connect ");
 const std::string MESSAGE("message ");
 const std::string ALIVE("alive");
+const std::string GET("get");
 
 std::string* get_string(std::string* msg, const std::string* header) {
     if (msg->length() < header->length()) {
         return NULL;
     }
     long pos;
+    long end_pos;
     if ((pos = msg->find(*header)) == -1) {
         return NULL;
     }
-    std::string* ret = new std::string(msg->substr(pos+header->length()));
+    if ((end_pos = msg->find('\n')) == -1) {
+        end_pos = msg->length();
+    }
+    std::string* ret = new std::string(msg->substr(pos+header->length(), end_pos-pos-header->length()).c_str());
     return ret;
 }
 
@@ -428,7 +406,23 @@ void parse_message(NodeThread *nodeThread, std::string *msg) {
     if (str_msg == NULL) {
         return;
     }
-    std::cout << str_msg->c_str() << std::endl;
+    if (DEBUG) {
+        std::cout << "Got message: " << str_msg->c_str() << std::endl;
+    }
+    nodeThread->msg_list->put(*str_msg);
+}
+
+void get_messages(NodeThread *nodeThread, std::string *msg) {
+    std::string* str_msg = get_string(msg, &GET);
+    if (str_msg == NULL) {
+        return;
+    }
+    std::string str("messages ");
+    for (int i = 0; i < nodeThread->msg_list->get_size(); i++) {
+        str.append(nodeThread->msg_list->get(i));
+        str.append(",");
+    }
+    std::cout << str.substr(0,str.length()-1) << std::endl;
 }
 
 void parse_id_update(NodeThread *nodeThread, int sockfd, std::string *msg) {
@@ -505,35 +499,39 @@ void message_reader(NodeThread * nodeThread) {
     while (nodeThread->is_alive.load()) {
         Message* txt = nodeThread->message_in_queue->pop();
         if (DEBUG) {
-            std::cout << "Recieved message: " << txt->message << std::endl;
+            std::cout << "Recieved on <" << txt->sockfd << "> message <" << txt->message << ">" << std::endl;
         }
-        std::string msg(txt->message);
-        Command* command = command_parse_message(&msg);
+        std::string* msg = new std::string(txt->message);
+        Command* command = command_parse_message(msg);
 
         if (command->broadcast != NULL) {
             std::string msg_body("message ");
             msg_body.append(*command->broadcast);
 
             for (auto it = nodeThread->socket_map->it(); it != nodeThread->socket_map->end(); ++it) {
-                Message* msg = new Message();
-                msg->sockfd = it->first;
-                msg->message = msg_body.c_str();
-                msg->message_len = msg_body.length();
-                nodeThread->message_out_queue->push(msg);
+                Message* msg_out = new Message();
+                msg_out->sockfd = it->first;
+                msg_out->message = msg_body.c_str();
+                msg_out->message_len = msg_body.length();
+                nodeThread->message_out_queue->push(msg_out);
             }
         }
 
-        parse_heartbeat(nodeThread, txt->sockfd, &msg);
-        parse_id_update(nodeThread, txt->sockfd, &msg);
-        parse_alive(nodeThread, &msg);
-        parse_connect(nodeThread, &msg);
-        parse_message(nodeThread, &msg);
+        parse_heartbeat(nodeThread, txt->sockfd, msg);
+        parse_id_update(nodeThread, txt->sockfd, msg);
+        parse_alive(nodeThread, msg);
+        parse_connect(nodeThread, msg);
+        parse_message(nodeThread, msg);
+        get_messages(nodeThread, msg);
     }
 }
 
 void message_writer(NodeThread* nodeThread) {
     while(nodeThread->is_alive.load()) {
         Message* packet = nodeThread->message_out_queue->pop();
+        if (DEBUG) {
+            std::cout << "Writing on <" << packet->sockfd << "> message <" << packet->message << ">" << std::endl;
+        }
         write(packet->sockfd, packet->message, packet->message_len);
     }
 }
@@ -611,6 +609,7 @@ int main(int argc, char * argv[]) {
     int client_socket[max_num_sockets];
     ConcurrentMap<int, SockProp*> socket_map;
     ConcurrentMap<int, const int*> process_map;
+    ArrayList<std::string>* msg_list = new ArrayList<std::string>();
 
     NodeThread* nodeThread = new NodeThread();
 //    nodeThread.address = "localhost";
@@ -622,6 +621,7 @@ int main(int argc, char * argv[]) {
     nodeThread->socket_map = &socket_map;
     nodeThread->process_map = &process_map;
     nodeThread->port_num = port;
+    nodeThread->msg_list = msg_list;
 
 
     std::thread connection_thread(create_socket, nodeThread);
