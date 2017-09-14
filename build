@@ -1,1 +1,5 @@
 #!/bin/bash
+cd src/
+cmake CMakeLists.txt
+make
+cd ..

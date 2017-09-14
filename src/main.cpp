@@ -18,7 +18,7 @@
 #include <chrono>
 #include <unistd.h>
 #define DEBUG false
-#define HR 500000
+#define HR 100000
 
 
 struct Message {
