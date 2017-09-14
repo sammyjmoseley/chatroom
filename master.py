@@ -10,11 +10,12 @@ import sys
 import time
 from socket import SOCK_STREAM, socket, AF_INET
 from threading import Thread
+from collections import deque
 
 address = 'localhost'
 threads = {}  # ends up keeping track of who is alive
 wait_ack = False
-
+current_milli_time = lambda: int(round(time.time() * 1000))
 
 class ClientHandler(Thread):
     def __init__(self, index, address, port, process):
@@ -81,6 +82,12 @@ class ClientHandler(Thread):
             self.sock.close()
         except:
             pass
+
+    def __str__(self):
+        return str(self.__dict__)
+
+    def __eq__(self, other):
+        return self.__dict__ == other.__dict__
 
 
 def kill(index):
@@ -177,17 +184,20 @@ def main(debug=False):
                 process = subprocess.Popen(['./process', str(pid), sp2[2], sp2[3]], stdout=open('/bin/echo', 'w'),
                                            stderr=open('/bin/echo', 'w'), preexec_fn=os.setsid)
 
-            # sleep for a while to allow the process be ready
-            time.sleep(3)
-
+            time.sleep(1)
             # connect to the port of the pid
             handler = ClientHandler(pid, address, port, process)
             threads[pid] = handler
             handler.start()
+
+            # sleep for a while to allow the process be ready
+            time.sleep(1)
+
         elif cmd == 'get' or cmd == 'alive':
             time.sleep(1)
             send(pid, sp1[1], set_wait_ack=True)
         elif cmd == 'broadcast':
+            time.sleep(0.5)
             send(pid, sp1[1])
         elif cmd == 'crash':
             kill(pid)
